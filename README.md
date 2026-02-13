@@ -328,9 +328,7 @@ footer{background:#0f2027;color:white;text-align:center;padding:20px;}
 <body>
 
 <!-- Música de bienvenida -->
-<audio controls autoplay loop style="position:fixed;bottom:10px;left:10px;z-index:1000;">
-<source src="audio/" type="audio/mpeg">Tu navegador no soporta audio.
-</audio>
+
 
 <!-- NAVBAR -->
 <nav class="navbar">
