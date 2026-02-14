@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Congreso Juvenil 2026 | UJERCA</title>
+<title>Congreso Juvenil 2026 | UJECA</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
 <!-- Fuente -->
@@ -72,8 +72,8 @@ footer{background:#0f2027;color:white;text-align:center;padding:20px}
 <!-- NAVBAR -->
 <nav class="navbar">
     <div class="logo-container">
-        <img src="img/logo.png" alt="UJERCA">
-        <strong>UJERCA</strong>
+        <img src="img/logo.png" alt="UJECA">
+        <strong>UJECA</strong>
     </div>
     <a href="#formulario" class="nav-btn">Inscribirme</a>
 </nav>
