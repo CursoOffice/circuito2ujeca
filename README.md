@@ -408,7 +408,8 @@ Cargando…
 
 <script>
 // Contador regresivo
-const countdownDate = new Date("d, 2026 09:00:00").getTime();
+const countdownDate = new Date("December 5, 2026 09:00:00").getTime();
+
 const daysEl = document.getElementById("days");
 const hoursEl = document.getElementById("hours");
 const minutesEl = document.getElementById("minutes");
@@ -417,16 +418,19 @@ const secondsEl = document.getElementById("seconds");
 setInterval(()=>{
     const now = new Date().getTime();
     const distance = countdownDate - now;
+
     const days = Math.floor(distance / (1000*60*60*24));
     const hours = Math.floor((distance%(1000*60*60*24))/(1000*60*60));
     const minutes = Math.floor((distance%(1000*60*60))/(1000*60));
     const seconds = Math.floor((distance%(1000*60))/1000);
-    daysEl.innerText=days;
-    hoursEl.innerText=hours;
-    minutesEl.innerText=minutes;
-    secondsEl.innerText=seconds;
+
+    daysEl.innerText = days;
+    hoursEl.innerText = hours;
+    minutesEl.innerText = minutes;
+    secondsEl.innerText = seconds;
 },1000);
 </script>
+
 <script>
 const track = document.querySelector('.carousel-track');
 const slides = document.querySelectorAll('.carousel-track img');
