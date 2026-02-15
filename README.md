@@ -75,7 +75,7 @@ footer{background:#0f2027;color:white;text-align:center;padding:20px}
         <img src="img/logo.png" alt="UJECA">
         <strong>UJECA</strong>
     </div>
-    <a href="#formulario" class="nav-btn">Inscribirme</a>
+    <a href="formulario.html" class="nav-btn">Inscribirme</a>
 </nav>
 
 <!-- HERO -->
@@ -93,7 +93,7 @@ footer{background:#0f2027;color:white;text-align:center;padding:20px}
     </div>
 
     <br>
-    <a href="#formulario" class="btn-primary">Preinscribirme</a>
+    <a href="formulario.html" class="btn-primary">Preinscribirme</a>
 </div>
 </header>
 
