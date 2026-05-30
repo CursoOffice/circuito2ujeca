@@ -1105,6 +1105,35 @@ tr:hover td{
  text-decoration:underline;
 }
 
+.ocr-status{
+ margin-top:12px;
+ padding:12px;
+ border-radius:12px;
+ background:#fff7f5;
+ border:1px solid rgba(143,29,44,.14);
+ color:var(--muted);
+ font-size:.92rem;
+ line-height:1.35;
+}
+
+.ocr-status strong{
+ display:block;
+ color:var(--vino);
+ margin-bottom:4px;
+}
+
+.ocr-status.ok{
+ background:#f0fdf4;
+ border-color:rgba(47,125,92,.22);
+ color:#245f49;
+}
+
+.ocr-status.warn{
+ background:#fff7ed;
+ border-color:rgba(245,185,66,.38);
+ color:#8a5a10;
+}
+
 .receipt-link{
  min-height:34px;
  display:inline-flex;
@@ -1659,7 +1688,9 @@ let participanteActual=null;
 let comprobanteTemporal=null;
 let pagosRemotos=[];
 let pagosHistorialActual=[];
+let promesaOCRPagos=null;
 let participantesPorDocumento=new Map();
+let guardandoPago=false;
 
 function borrarPagosAnterioresLocales(){
   localStorage.removeItem(STORAGE_PAGOS_ANTERIORES);
@@ -1673,6 +1704,16 @@ function limpiarCacheConsultaPagos(){
 
 function money(n){
   return "$"+Number(n || 0).toLocaleString("es-CO");
+}
+
+function escaparPagoHtml(valor){
+  if(window.escaparHtmlUJECA) return window.escaparHtmlUJECA(valor);
+  return String(valor ?? "")
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#39;");
 }
 
 function crearCodigoComprobantePago(){
@@ -1844,17 +1885,46 @@ function ocultarLoaderPago(delay=900){
   },delay);
 }
 
+function sonarAlertaDuplicadoPago(){
+  try{
+    const AudioContext=window.AudioContext || window.webkitAudioContext;
+    if(!AudioContext) return;
+    const ctx=new AudioContext();
+    const volumen=ctx.createGain();
+    volumen.gain.value=0.12;
+    volumen.connect(ctx.destination);
+
+    [0,150,300].forEach((delay)=>{
+      const osc=ctx.createOscillator();
+      osc.type="square";
+      osc.frequency.value=delay === 150 ? 740 : 520;
+      osc.connect(volumen);
+      osc.start(ctx.currentTime + delay / 1000);
+      osc.stop(ctx.currentTime + delay / 1000 + 0.11);
+    });
+
+    setTimeout(()=>ctx.close().catch(()=>{}),700);
+  }catch{
+    // El navegador puede bloquear audio sin interaccion; la alerta visual se mantiene.
+  }
+}
+
 function mostrarAviso(mensaje,titulo="Aviso"){
   const aviso=document.getElementById("appNotice");
   const tituloEl=document.getElementById("appNoticeTitle");
   const textoEl=document.getElementById("appNoticeText");
   if(!aviso || !tituloEl || !textoEl) return;
   tituloEl.innerText=titulo;
-  textoEl.innerText=mensaje;
+  textoEl.innerHTML=mensaje;
   aviso.classList.add("show");
   aviso.setAttribute("aria-hidden","false");
   const boton=aviso.querySelector("button");
   if(boton) boton.focus();
+}
+
+function mostrarAlertaDuplicadoPago(mensaje,titulo="Pago duplicado"){
+  sonarAlertaDuplicadoPago();
+  mostrarAviso(mensaje,titulo);
 }
 
 function cerrarAviso(){
@@ -2197,6 +2267,163 @@ function guardarPagoPendienteSincronizar(pago){
   }
 }
 
+function obtenerPagosPendientesSincronizar(){
+  try{
+    const raw=localStorage.getItem(STORAGE_PAGOS_PENDIENTES);
+    const pagos=JSON.parse(raw || "[]");
+    return Array.isArray(pagos) ? pagos : [];
+  }catch{
+    return [];
+  }
+}
+
+function normalizarReferenciaPago(valor){
+  return String(valor || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g,"")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g,"")
+    .trim();
+}
+
+function pagoTieneMismaReferencia(pago,referencia){
+  const refNueva=normalizarReferenciaPago(referencia);
+  if(!refNueva) return false;
+  const refExistente=normalizarReferenciaPago(pago?.ReferenciaPago || pago?.referenciaPago || "");
+  return refExistente && refExistente === refNueva;
+}
+
+function todosLosPagosRegistrados(){
+  return [].concat(pagosRemotos || []).concat(obtenerPagosPendientesSincronizar())
+    .map(normalizarPago)
+    .filter(Boolean);
+}
+
+function buscarPagoPorReferencia(referencia){
+  return todosLosPagosRegistrados().find((pago)=>pagoTieneMismaReferencia(pago,referencia)) || null;
+}
+
+function normalizarFechaPagoClave(valor){
+  const texto=String(valor || "").trim();
+  if(!texto) return "";
+  const fecha=new Date(texto);
+  if(!Number.isNaN(fecha.getTime())) return fecha.toISOString().slice(0,10);
+  return texto.slice(0,10);
+}
+
+function buscarPagoSimilar({documento,codigo,fechaPago,valorAbono,referenciaPago}){
+  const refNueva=normalizarReferenciaPago(referenciaPago);
+  const docNuevo=normalizarDocumento(documento);
+  const codigoNuevo=normalizarTextoBusqueda(codigo);
+  const fechaNueva=normalizarFechaPagoClave(fechaPago);
+  const valorNuevo=Number(valorAbono || 0);
+
+  return todosLosPagosRegistrados().find((pago)=>{
+    if(refNueva && pagoTieneMismaReferencia(pago,refNueva)) return true;
+
+    const mismoDocumento=docNuevo && normalizarDocumento(pago.Documento || pago.documento || pago.cedula || "") === docNuevo;
+    const mismoCodigo=codigoNuevo && normalizarTextoBusqueda(pago.Codigo || pago.codigo || pago.ID || "") === codigoNuevo;
+    const mismaPersona=mismoDocumento || mismoCodigo;
+    const mismaFecha=fechaNueva && normalizarFechaPagoClave(pago.FechaPago || pago.fechaPago || pago.FechaRegistro) === fechaNueva;
+    const mismoValor=Number(pago.ValorAbono || pago.abono || pago.valor || 0) === valorNuevo;
+
+    return mismaPersona && mismaFecha && mismoValor;
+  }) || null;
+}
+
+function fechaAvisoPago(valor){
+  if(!valor) return "sin fecha";
+  const fecha=new Date(valor);
+  if(Number.isNaN(fecha.getTime())) return escaparPagoHtml(String(valor).slice(0,10));
+  return escaparPagoHtml(fecha.toLocaleDateString("es-CO",{
+    year:"numeric",
+    month:"long",
+    day:"numeric"
+  }));
+}
+
+async function refrescarPagosOficialesParaDuplicados(){
+  const respuesta=await fetch(crearUrlUJECA(API,{
+    accion:"pagos",
+    hoja:HOJA_PAGOS,
+    verificacion:"duplicados"
+  }),{cache:"no-store"});
+  if(!respuesta.ok) throw new Error("No se pudo verificar la base oficial de pagos");
+  const json=await respuesta.json();
+  const lista=Array.isArray(json) ? json : extraerListaUJECA(json);
+  if(Array.isArray(lista)){
+    pagosRemotos=lista.map(item=>normalizarPago({...item,Fuente:"remoto"})).filter(Boolean);
+  }
+  return pagosRemotos;
+}
+
+async function verificarDuplicadoEnBasePagos(datosPago){
+  await refrescarPagosOficialesParaDuplicados();
+  return buscarPagoSimilar(datosPago);
+}
+
+function medioPagoRequiereSoporte(medioPago){
+  return !["efectivo"].includes(normalizarTextoPago(medioPago));
+}
+
+function comprobanteValidoPago(){
+  return Boolean(comprobanteTemporal && comprobanteTemporal.data && comprobanteTemporal.nombre);
+}
+
+function setBotonesPagoBloqueados(bloqueado){
+  document.querySelectorAll(".registro-card .toolbar button").forEach((boton)=>{
+    boton.disabled=bloqueado;
+  });
+}
+
+function desbloquearGuardadoPago(){
+  guardandoPago=false;
+  setBotonesPagoBloqueados(false);
+}
+
+function limpiarResumenParticipantePago(){
+  participanteActual=null;
+  ["nombre","doc","iglesia","ciudad","zona","lider","codigo","fecha"].forEach((id)=>{
+    const input=document.getElementById(id);
+    if(input) input.value="";
+  });
+  const labels={
+    nombreLabel:"No registrado",
+    docLabel:"-",
+    iglesiaLabel:"-",
+    ciudadLabel:"-",
+    zonaLabel:"-",
+    liderLabel:"-",
+    codigoLabel:"-",
+    fechaLabel:"-",
+    estadoVisible:"Pendiente de consulta",
+    metricValor:money(PRECIO_CONGRESO),
+    metricCamisa:money(0),
+    metricAbonado:money(0),
+    metricSaldo:money(0)
+  };
+  Object.entries(labels).forEach(([id,valor])=>{
+    const el=document.getElementById(id);
+    if(el) el.innerText=valor;
+  });
+  const badge=document.getElementById("badgeEstado");
+  if(badge){
+    badge.className="badge pendiente";
+    badge.innerText="Sin consulta";
+  }
+  const estadoPago=document.getElementById("estadoPago");
+  if(estadoPago) estadoPago.innerHTML="";
+}
+
+function limpiarPantallaDespuesPago(mensajeFinal){
+  document.getElementById("cedula").value="";
+  limpiarResumenParticipantePago();
+  limpiarFormularioPago();
+  pagosHistorialActual=[];
+  renderHistorialPagos();
+  document.getElementById("mensajePago").innerHTML=mensajeFinal || "";
+}
+
 function normalizarTextoBusqueda(valor){
   return String(valor || "")
     .normalize("NFD")
@@ -2510,20 +2737,20 @@ function renderHistorialPagos(){
   let html="";
   pagos.forEach((pago,index)=>{
     const link = pago.ComprobanteNombre
-      ? `<a class="comprobante-link" href="${pago.ComprobanteData || "#"}" target="_blank" rel="noopener">${pago.ComprobanteNombre}</a>`
+      ? `<a class="comprobante-link" href="${escaparPagoHtml(pago.ComprobanteData || "#")}" target="_blank" rel="noopener">${escaparPagoHtml(pago.ComprobanteNombre)}</a>`
       : "Sin archivo";
     const fuente = pago.Fuente === "remoto" ? "En linea" : "Local";
     const fechaHistorial = formatoFechaHistorial(pago.FechaPago || pago.FechaRegistro || "");
 
     html+=`<tr>
-      <td>${fechaHistorial}</td>
+      <td>${escaparPagoHtml(fechaHistorial)}</td>
       <td>${money(pago.ValorAbono)}</td>
-      <td>${pago.MedioPago || ""}</td>
-      <td>${pago.ReferenciaPago || ""}<br><span class="small">${fuente}</span></td>
-      <td>${pago.Organizador || ""}</td>
+      <td>${escaparPagoHtml(pago.MedioPago || "")}</td>
+      <td>${escaparPagoHtml(pago.ReferenciaPago || "")}<br><span class="small">${escaparPagoHtml(fuente)}</span></td>
+      <td>${escaparPagoHtml(pago.Organizador || "")}</td>
       <td>${link}</td>
       <td><button class="receipt-link" type="button" onclick="descargarComprobanteHistorial(${index})">Descargar</button></td>
-      <td>${pago.ObservacionPago || ""}</td>
+      <td>${escaparPagoHtml(pago.ObservacionPago || "")}</td>
     </tr>`;
   });
 
@@ -2560,6 +2787,223 @@ function calcularVistaPrevia(){
   }
 }
 
+function cargarMotorOCRPagos(){
+  if(window.Tesseract) return Promise.resolve(window.Tesseract);
+  if(promesaOCRPagos) return promesaOCRPagos;
+
+  promesaOCRPagos=new Promise((resolve,reject)=>{
+    const script=document.createElement("script");
+    script.src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+    script.async=true;
+    script.onload=()=>window.Tesseract ? resolve(window.Tesseract) : reject(new Error("No se cargo el lector OCR"));
+    script.onerror=()=>reject(new Error("No se pudo cargar el lector OCR"));
+    document.head.appendChild(script);
+  });
+
+  return promesaOCRPagos;
+}
+
+function limpiarTextoOCRPago(texto){
+  return String(texto || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g,"")
+    .replace(/[|]/g," ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+function soloReferenciaPago(valor){
+  return String(valor || "")
+    .replace(/^[#:\-\s]+/,"")
+    .replace(/[^\w.-]/g,"")
+    .replace(/_{2,}/g,"_")
+    .trim();
+}
+
+function numeroMontoComprobantePago(valor){
+  const raw=String(valor || "").trim();
+  if(!raw) return 0;
+  let limpio=raw
+    .replace(/[^\d.,]/g,"")
+    .replace(/^[.,]+|[.,]+$/g,"");
+  if(!limpio) return 0;
+
+  const tieneComa=limpio.includes(",");
+  const tienePunto=limpio.includes(".");
+  if(tieneComa && tienePunto){
+    const ultimaComa=limpio.lastIndexOf(",");
+    const ultimoPunto=limpio.lastIndexOf(".");
+    const decimal=ultimaComa > ultimoPunto ? "," : ".";
+    const miles=decimal === "," ? "." : ",";
+    limpio=limpio.replace(new RegExp(`\\${miles}`,"g"),"");
+    limpio=limpio.replace(decimal,".");
+  }else if(tieneComa){
+    const partes=limpio.split(",");
+    limpio=partes[partes.length - 1].length === 2
+      ? `${partes.slice(0,-1).join("")}.${partes.at(-1)}`
+      : limpio.replace(/,/g,"");
+  }else if(tienePunto){
+    const partes=limpio.split(".");
+    limpio=partes[partes.length - 1].length === 2
+      ? `${partes.slice(0,-1).join("")}.${partes.at(-1)}`
+      : limpio.replace(/\./g,"");
+  }
+
+  const numero=Math.round(Number(limpio));
+  return Number.isFinite(numero) ? numero : 0;
+}
+
+function montoComprobanteValidoPago(valor){
+  const numero=Number(valor || 0);
+  return numero >= 1000 && numero <= 10000000;
+}
+
+function patronEtiquetaMontoPago(){
+  return "(?:cu(?:a|á)nto|valor\\s*(?:abonado|pagado|enviado|transferido)?|monto|total\\s*(?:pagado|enviado|transferido)?|pagaste|enviaste|transferiste|importe|abono)";
+}
+
+function patronEtiquetaReferenciaPago(){
+  return "(?:referencia|ref\\.?|n(?:u|ú)mero\\s*(?:de\\s*)?(?:comprobante|aprobaci(?:o|ó)n|autorizaci(?:o|ó)n|operaci(?:o|ó)n|transacci(?:o|ó)n)|nro\\.?\\s*(?:comprobante|aprobaci(?:o|ó)n|autorizaci(?:o|ó)n|operaci(?:o|ó)n|transacci(?:o|ó)n)|no\\.?\\s*(?:comprobante|aprobaci(?:o|ó)n|autorizaci(?:o|ó)n|operaci(?:o|ó)n|transacci(?:o|ó)n)|comprobante|aprobaci(?:o|ó)n|autorizaci(?:o|ó)n|transacci(?:o|ó)n|id\\s*(?:transacci(?:o|ó)n|operaci(?:o|ó)n|movimiento)|c(?:o|ó)digo\\s*(?:de\\s*)?(?:seguimiento|transacci(?:o|ó)n|operaci(?:o|ó)n|autorizaci(?:o|ó)n|aprobaci(?:o|ó)n|pago)|cus|rastreo|operaci(?:o|ó)n|movimiento)";
+}
+
+function codigoReferenciaValidoPago(valor){
+  const limpio=soloReferenciaPago(valor);
+  const digitos=limpio.replace(/\D/g,"");
+  if(limpio.length < 5 || limpio.length > 34) return false;
+  if(digitos.length < 5) return false;
+  if(/^3\d{9}$/.test(digitos)) return false;
+  if(/^\d+$/.test(limpio) && /^20\d{6,}/.test(digitos) && digitos.length >= 8 && digitos.length <= 14) return false;
+  if(/^\d+$/.test(limpio) && digitos.length <= 7) return false;
+  return true;
+}
+
+function esDatoNoReferenciaPago(valor,linea=""){
+  const limpio=soloReferenciaPago(valor);
+  const digitos=limpio.replace(/\D/g,"");
+  const contexto=limpiarTextoOCRPago(linea).toLowerCase();
+  if(!codigoReferenciaValidoPago(limpio)) return true;
+  const etiquetaReferencia=new RegExp(patronEtiquetaReferenciaPago(),"i").test(contexto);
+  if(!etiquetaReferencia && /cuanto|valor|monto|total|pagaste|enviaste|saldo|disponible|costo/.test(contexto)) return true;
+  if(/numero\s*nequi|celular|telefono|cuenta\s*destino|cuenta\s*origen|para|de\s*donde/.test(contexto) && /^3\d{9}$/.test(digitos)) return true;
+  if(/fecha|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre|enero|febrero|marzo|abril/.test(contexto)) return true;
+  if(/^\d{1,3}([.,]\d{3})+([.,]\d{2})?$/.test(String(valor).trim())) return true;
+  return false;
+}
+
+function detectarMedioDesdeOCRPago(texto){
+  const normalizado=limpiarTextoOCRPago(texto).toLowerCase();
+  if(normalizado.includes("nequi")) return "Nequi";
+  if(normalizado.includes("daviplata") || normalizado.includes("davi plata")) return "Daviplata";
+  if(normalizado.includes("bancolombia") || normalizado.includes("banco colombia")) return "Transferencia";
+  return "";
+}
+
+function extraerReferenciaDesdeTextoPago(texto){
+  const normalizado=limpiarTextoOCRPago(texto);
+  const lineas=String(texto || "")
+    .split(/\r?\n/)
+    .map(linea=>limpiarTextoOCRPago(linea))
+    .filter(Boolean);
+  const etiqueta=patronEtiquetaReferenciaPago();
+  const patronesPrioritarios=[
+    new RegExp(`${etiqueta}\\s*[:#\\-]?\\s*([A-Z]?\\d[A-Z0-9.-]{4,33})`,"i"),
+    new RegExp(`${etiqueta}\\s*(?:es|nro|no\\.)?\\s*[:#\\-]?\\s*([A-Z]?\\d[A-Z0-9.-]{4,33})`,"i")
+  ];
+
+  for(const linea of lineas){
+    for(const patron of patronesPrioritarios){
+      const match=linea.match(patron);
+      if(match && !esDatoNoReferenciaPago(match[1],linea)) return soloReferenciaPago(match[1]);
+    }
+  }
+
+  for(let i=0;i<lineas.length;i++){
+    if(new RegExp(etiqueta,"i").test(lineas[i])){
+      for(let j=i+1;j<=Math.min(i+3,lineas.length-1);j++){
+        const posibles=lineas[j].match(/[A-Z]?\d[A-Z0-9.-]{4,33}/gi) || [];
+        const candidato=posibles.find(item=>!esDatoNoReferenciaPago(item,lineas[j]));
+        if(candidato) return soloReferenciaPago(candidato);
+      }
+    }
+  }
+
+  const referenciaNequi=(normalizado.match(/\bM\d{6,12}\b/i) || [])[0];
+  if(referenciaNequi && !esDatoNoReferenciaPago(referenciaNequi)) return soloReferenciaPago(referenciaNequi);
+
+  const candidatos=(normalizado.match(/[A-Z]?\d[A-Z0-9.-]{5,33}/gi) || [])
+    .map(soloReferenciaPago)
+    .filter(item=>!esDatoNoReferenciaPago(item))
+    .sort((a,b)=>{
+      const aTieneLetra=/[A-Z]/i.test(a) ? 1 : 0;
+      const bTieneLetra=/[A-Z]/i.test(b) ? 1 : 0;
+      return bTieneLetra - aTieneLetra || b.replace(/\D/g,"").length - a.replace(/\D/g,"").length || b.length - a.length;
+    });
+
+  return candidatos[0] || "";
+}
+
+function extraerMontoDesdeTextoPago(texto){
+  const lineas=String(texto || "")
+    .split(/\r?\n/)
+    .map(linea=>limpiarTextoOCRPago(linea))
+    .filter(Boolean);
+  const etiqueta=patronEtiquetaMontoPago();
+  const patronMonto=/\$?\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\$?\s*\d{4,8}/g;
+
+  for(const linea of lineas){
+    if(new RegExp(etiqueta,"i").test(linea)){
+      const montos=linea.match(patronMonto) || [];
+      const candidato=montos.map(numeroMontoComprobantePago).find(montoComprobanteValidoPago);
+      if(candidato) return candidato;
+    }
+  }
+
+  for(let i=0;i<lineas.length;i++){
+    if(new RegExp(etiqueta,"i").test(lineas[i])){
+      for(let j=i+1;j<=Math.min(i+2,lineas.length-1);j++){
+        const montos=lineas[j].match(patronMonto) || [];
+        const candidato=montos.map(numeroMontoComprobantePago).find(montoComprobanteValidoPago);
+        if(candidato) return candidato;
+      }
+    }
+  }
+
+  const todos=lineas.join(" ");
+  const montos=(todos.match(/\$\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?/g) || [])
+    .map(numeroMontoComprobantePago)
+    .filter(montoComprobanteValidoPago)
+    .sort((a,b)=>b-a);
+
+  return montos[0] || 0;
+}
+
+function actualizarEstadoOCRComprobante(clase,titulo,texto){
+  const estado=document.getElementById("ocrEstadoComprobante");
+  if(!estado) return;
+  estado.className=`ocr-status ${clase || ""}`.trim();
+  estado.innerHTML=`<strong>${titulo}</strong>${texto}`;
+}
+
+async function leerReferenciaComprobanteImagen(dataUrl){
+  actualizarEstadoOCRComprobante("","Leyendo comprobante","Buscando referencia o numero de comprobante en la imagen...");
+  const Tesseract=await cargarMotorOCRPagos();
+  const resultado=await Tesseract.recognize(dataUrl,"spa+eng",{
+    logger:(m)=>{
+      if(m.status==="recognizing text"){
+        const avance=Math.round((m.progress || 0) * 100);
+        actualizarEstadoOCRComprobante("","Leyendo comprobante",`Reconocimiento de texto: ${avance}%.`);
+      }
+    }
+  });
+  const texto=resultado?.data?.text || "";
+  return {
+    texto,
+    referencia:extraerReferenciaDesdeTextoPago(texto),
+    monto:extraerMontoDesdeTextoPago(texto),
+    medio:detectarMedioDesdeOCRPago(texto)
+  };
+}
+
 function previsualizarComprobante(){
   const input=document.getElementById("comprobante");
   const preview=document.getElementById("previewComprobante");
@@ -2582,9 +3026,43 @@ function previsualizarComprobante(){
     let html=`<strong>Comprobante listo:</strong> ${archivo.name}<br><span class="small">Se guardara ligado a este participante en este navegador.</span>`;
     if((archivo.type || "").startsWith("image/")){
       html+=`<img src="${lector.result}" alt="Comprobante">`;
+      html+=`<div id="ocrEstadoComprobante" class="ocr-status"><strong>Referencia automatica</strong>Preparando lectura de imagen...</div>`;
     }
     preview.innerHTML=html;
     preview.style.display="block";
+
+    if((archivo.type || "").startsWith("image/")){
+      leerReferenciaComprobanteImagen(lector.result)
+        .then(({texto,referencia,monto,medio})=>{
+          comprobanteTemporal.textoOCR=texto;
+          if(medio){
+            document.getElementById("medioPago").value=medio;
+          }
+          if(monto){
+            const campoAbono=document.getElementById("abono");
+            campoAbono.value=String(monto);
+            calcularVistaPrevia();
+          }
+          if(referencia){
+            const campoReferencia=document.getElementById("referenciaPago");
+            if(!campoReferencia.value.trim()){
+              campoReferencia.value=referencia;
+              actualizarEstadoOCRComprobante("ok","Datos detectados",`Referencia: <strong>${referencia}</strong>${monto ? `. Valor abonado: <strong>${money(monto)}</strong>` : ""}`);
+            }else{
+              actualizarEstadoOCRComprobante("ok","Datos detectados",`Sugerencia de referencia: <strong>${referencia}</strong>${monto ? `. Valor abonado: <strong>${money(monto)}</strong>` : ""}. El campo de referencia no se cambio porque ya tenia un valor.`);
+            }
+          }else if(monto){
+            actualizarEstadoOCRComprobante("ok","Valor detectado",`Se cargo automaticamente el valor abonado: <strong>${money(monto)}</strong>. Escribe la referencia manualmente si no aparece.`);
+          }else{
+            actualizarEstadoOCRComprobante("warn","No se encontro referencia","La imagen se guardo, pero escribe manualmente la referencia o numero de comprobante.");
+          }
+        })
+        .catch(()=>{
+          actualizarEstadoOCRComprobante("warn","Lectura no disponible","No se pudo leer automaticamente. Escribe manualmente la referencia o numero de comprobante.");
+        });
+    }else if(archivo.type === "application/pdf" || /\.pdf$/i.test(archivo.name)){
+      preview.innerHTML+=`<div class="ocr-status warn"><strong>PDF adjunto</strong>La lectura automatica funciona con imagenes. Para PDF escribe la referencia manualmente.</div>`;
+    }
   };
   lector.readAsDataURL(archivo);
 }
@@ -2724,6 +3202,11 @@ function buscarParticipante(){
 }
 
 async function registrarPago(){
+  if(guardandoPago){
+    mostrarAviso("Ya hay un pago en proceso. Espera la confirmacion antes de intentar de nuevo.","Pago en proceso");
+    return;
+  }
+
   if(!participanteActual){
     mostrarAviso("Primero busca y selecciona un participante inscrito antes de registrar el pago.","Busca un participante");
     return;
@@ -2751,6 +3234,16 @@ async function registrarPago(){
     return;
   }
 
+  if(medioPagoRequiereSoporte(medioPago) && !comprobanteValidoPago()){
+    mostrarAviso("Adjunta el comprobante del pago antes de guardar. Esto deja soporte del abono y ayuda a validar la referencia.","Comprobante requerido");
+    return;
+  }
+
+  if(medioPagoRequiereSoporte(medioPago) && !referenciaPago){
+    mostrarAviso("Ingresa o escanea la referencia del comprobante antes de guardar. Esto evita pagos duplicados.","Referencia requerida");
+    return;
+  }
+
   const valorCongreso = valorCongresoParticipante();
   const descuentoAplicado = descuentoParticipante();
   const valorCamisa = valorCamisaParticipante();
@@ -2764,12 +3257,68 @@ async function registrarPago(){
     return;
   }
 
+  const pagoDuplicado=buscarPagoSimilar({
+    documento:participanteActual.Documento,
+    codigo:participanteActual.Codigo,
+    fechaPago,
+    valorAbono,
+    referenciaPago
+  });
+  if(pagoDuplicado){
+    const nombreDuplicado=escaparPagoHtml(pagoDuplicado.Nombre || "este u otro participante");
+    const fechaDuplicada=fechaAvisoPago(pagoDuplicado.FechaPago || pagoDuplicado.FechaRegistro);
+    const refDuplicada=pagoDuplicado.ReferenciaPago ? ` Referencia existente: <strong>${escaparPagoHtml(pagoDuplicado.ReferenciaPago)}</strong>.` : "";
+    mostrarAlertaDuplicadoPago(
+      `Ya existe un pago parecido registrado para ${nombreDuplicado} (${fechaDuplicada}) por <strong>${money(pagoDuplicado.ValorAbono)}</strong>.${refDuplicada} No se guardo el pago duplicado.`,
+      referenciaPago ? "Referencia o pago duplicado" : "Pago duplicado"
+    );
+    return;
+  }
+
+  guardandoPago=true;
+  setBotonesPagoBloqueados(true);
   setLoaderPago(
     "registro",
     "Validando registro",
     `Confirmando datos de ${participanteActual.Nombre || "participante"} y el valor del abono.`,
     18
   );
+
+  try{
+    setLoaderPago(
+      "registro",
+      "Verificando duplicados",
+      "Consultando la base oficial para confirmar que este comprobante no exista.",
+      28
+    );
+    const duplicadoBase=await verificarDuplicadoEnBasePagos({
+      documento:participanteActual.Documento,
+      codigo:participanteActual.Codigo,
+      fechaPago,
+      valorAbono,
+      referenciaPago
+    });
+    if(duplicadoBase){
+      ocultarLoaderPago(100);
+      desbloquearGuardadoPago();
+      const nombreDuplicado=escaparPagoHtml(duplicadoBase.Nombre || "este u otro participante");
+      const fechaDuplicada=fechaAvisoPago(duplicadoBase.FechaPago || duplicadoBase.FechaRegistro);
+      const refDuplicada=duplicadoBase.ReferenciaPago ? ` Referencia existente: <strong>${escaparPagoHtml(duplicadoBase.ReferenciaPago)}</strong>.` : "";
+      mostrarAlertaDuplicadoPago(
+        `La base oficial ya tiene un pago parecido para ${nombreDuplicado} (${fechaDuplicada}) por <strong>${money(duplicadoBase.ValorAbono)}</strong>.${refDuplicada} No se guardo el pago duplicado.`,
+        referenciaPago ? "Comprobante duplicado" : "Pago duplicado"
+      );
+      return;
+    }
+  }catch(error){
+    ocultarLoaderPago(100);
+    desbloquearGuardadoPago();
+    mostrarAviso(
+      `No se pudo verificar la base oficial de pagos. Por seguridad no se guardo el pago. Intenta de nuevo con conexion estable. Detalle: ${error.message}`,
+      "Verificacion requerida"
+    );
+    return;
+  }
 
   const idPagoLocal=crearCodigoComprobantePago();
   const pagoPayload = {
@@ -2859,10 +3408,14 @@ async function registrarPago(){
       "No se pudo guardar en linea, pero se genero el respaldo local y el comprobante.",
       88
     );
-    await generarDescargarComprobantePago({
-      ...pagoPayload,
-      Fuente:"local"
-    });
+    try{
+      await generarDescargarComprobantePago({
+        ...pagoPayload,
+        Fuente:"local"
+      });
+    }catch{
+      document.getElementById("mensajePago").innerHTML="El pago quedo en respaldo local, pero no se pudo descargar el comprobante.";
+    }
     setLoaderPago(
       "descarga",
       "Comprobante descargado",
@@ -2871,8 +3424,8 @@ async function registrarPago(){
       true
     );
     ocultarLoaderPago(1500);
-    limpiarFormularioPago();
-    document.getElementById("mensajePago").innerHTML=`No se pudo guardar en Excel en linea. Se dejo respaldo local asociado al campista. Error: <strong>${error.message}</strong>`;
+    limpiarPantallaDespuesPago(`No se pudo guardar en Excel en linea. Se dejo respaldo local asociado al campista. Error: <strong>${error.message}</strong>`);
+    desbloquearGuardadoPago();
     return;
   }
 
@@ -2891,7 +3444,11 @@ async function registrarPago(){
     "El registro quedo guardado. Generando comprobante para descarga.",
     88
   );
-  await generarDescargarComprobantePago(pagoConfirmado);
+  try{
+    await generarDescargarComprobantePago(pagoConfirmado);
+  }catch{
+    document.getElementById("mensajePago").innerHTML="El pago quedo guardado, pero no se pudo descargar el comprobante.";
+  }
   setLoaderPago(
     "descarga",
     "Comprobante descargado",
@@ -2900,8 +3457,8 @@ async function registrarPago(){
     true
   );
   ocultarLoaderPago(1500);
-  limpiarFormularioPago();
-  document.getElementById("mensajePago").innerHTML=`Pago registrado en Excel en linea y asociado al campista. Saldo restante: <strong>${money(saldo)}</strong>`;
+  limpiarPantallaDespuesPago(`Pago registrado en Excel en linea y asociado al campista. Saldo restante: <strong>${money(saldo)}</strong>`);
+  desbloquearGuardadoPago();
 }
 
 cargar();
