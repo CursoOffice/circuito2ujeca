@@ -3577,12 +3577,12 @@ async function registrarPago(){
     }
 
     if(!r.ok){
-      throw new Error(respuestaRemota.error || "El servidor remoto devolvio un error");
+      throw new Error(respuestaRemota.error || respuestaRemota.raw || `El servidor remoto devolvio un error (${r.status})`);
     }
 
     guardadoRemoto = respuestaRemota.resultado === "ok" || respuestaRemota.ok === true || respuestaRemota.guardado === true;
     if(!guardadoRemoto){
-      throw new Error("El Apps Script no confirmo el guardado del pago");
+      throw new Error(respuestaRemota.error || respuestaRemota.raw || "El Apps Script no confirmo el guardado del pago");
     }
   }catch(error){
     if(pagoEditando){
