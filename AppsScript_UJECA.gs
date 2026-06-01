@@ -126,6 +126,10 @@ function doPost(e) {
     return responderJson_(registrarPago_(datos));
   }
 
+  if (accion === "actualizarPago") {
+    return responderJson_(actualizarPago_(datos));
+  }
+
   if (accion === "reenviarCorreoInscripcion") {
     return responderJson_(reenviarCorreoInscripcion_(datos));
   }
@@ -332,6 +336,86 @@ function registrarPago_(datos) {
   registrarComprobantePago_(datosPago);
   const correoEnviado = enviarCorreoEstadoCuentaPorPago_(datosPago);
   return { resultado: "ok", IdPago: idPago, correoEnviado: correoEnviado };
+}
+
+function actualizarPago_(datos) {
+  const hoja = obtenerHojaPagos_(HOJA_PAGOS);
+  const idPago = String(datos.IdPago || datos.idPago || "").trim();
+  if (!idPago) {
+    return { resultado: "error", error: "IdPago requerido para actualizar el pago" };
+  }
+
+  const filaIndex = buscarFilaPagoPorIdPago_(hoja, idPago);
+  if (filaIndex < 0) {
+    return { resultado: "error", error: "No se encontro el pago para actualizar" };
+  }
+
+  const encabezados = obtenerEncabezadosActuales_(hoja, COLUMNAS_PAGOS);
+  const datosPago = normalizarDatosPago_(datos, idPago);
+  const fila = encabezados.map((columna) => datosPago[columna] || "");
+
+  hoja.getRange(filaIndex, 1, 1, fila.length).setValues([fila]);
+  actualizarComprobantePago_(datosPago);
+  const correoEnviado = enviarCorreoEstadoCuentaPorPago_(datosPago);
+  return { resultado: "ok", IdPago: idPago, correoEnviado: correoEnviado };
+}
+
+function buscarFilaPagoPorIdPago_(hoja, idPago) {
+  const valores = hoja.getDataRange().getValues();
+  if (valores.length < 2) return -1;
+
+  const encabezados = valores[0].map((valor) => String(valor || "").trim());
+  const indiceIdPago = encabezados.indexOf("IdPago");
+  if (indiceIdPago < 0) return -1;
+
+  const busqueda = String(idPago || "").trim();
+  for (let i = 1; i < valores.length; i++) {
+    if (String(valores[i][indiceIdPago] || "").trim() === busqueda) {
+      return i + 1;
+    }
+  }
+
+  return -1;
+}
+
+function buscarFilaComprobantePorIdPago_(hoja, idPago) {
+  const valores = hoja.getDataRange().getValues();
+  if (valores.length < 2) return -1;
+
+  const encabezados = valores[0].map((valor) => String(valor || "").trim());
+  const indiceIdPago = encabezados.indexOf("IdPago");
+  const indiceIdComprobante = encabezados.indexOf("IdComprobante");
+  const busqueda = String(idPago || "").trim();
+
+  for (let i = 1; i < valores.length; i++) {
+    const fila = valores[i];
+    const coincideIdPago = indiceIdPago >= 0 && String(fila[indiceIdPago] || "").trim() === busqueda;
+    const coincideIdComprobante = indiceIdComprobante >= 0 && String(fila[indiceIdComprobante] || "").trim() === busqueda;
+    if (coincideIdPago || coincideIdComprobante) {
+      return i + 1;
+    }
+  }
+
+  return -1;
+}
+
+function actualizarComprobantePago_(datosPago) {
+  const hoja = obtenerHojaComprobantes_(HOJA_COMPROBANTES);
+  const encabezados = obtenerEncabezadosActuales_(hoja, COLUMNAS_COMPROBANTES);
+  const comprobante = normalizarDatosComprobantePago_(datosPago);
+  const fila = encabezados.map((columna) => comprobante[columna] || "");
+  const filaIndex = buscarFilaComprobantePorIdPago_(hoja, datosPago.IdPago);
+
+  if (filaIndex > 0) {
+    const filaExistente = hoja.getRange(filaIndex, 1, 1, encabezados.length).getValues()[0];
+    const indiceFechaEmision = encabezados.indexOf("FechaEmision");
+    if (indiceFechaEmision >= 0 && filaExistente[indiceFechaEmision]) {
+      fila[indiceFechaEmision] = filaExistente[indiceFechaEmision];
+    }
+    hoja.getRange(filaIndex, 1, 1, fila.length).setValues([fila]);
+  } else {
+    hoja.appendRow(fila);
+  }
 }
 
 function reenviarCorreoInscripcion_(datos) {

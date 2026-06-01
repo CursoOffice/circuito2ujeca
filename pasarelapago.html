@@ -1499,7 +1499,7 @@ tr:hover td{
         </div>
         <div>
           <label for="medioPago">Medio de pago</label>
-          <select id="medioPago">
+          <select id="medioPago" onchange="actualizarReferenciaEfectivo(); actualizarRevisionManual()">
             <option value="Transferencia">Transferencia</option>
             <option value="Efectivo">Efectivo</option>
             <option value="Consignacion">Consignacion</option>
@@ -1509,7 +1509,8 @@ tr:hover td{
         </div>
         <div>
           <label for="abono">Valor abonado</label>
-          <input id="abono" type="number" min="0" placeholder="Valor pagado" oninput="calcularVistaPrevia()">
+          <input id="abono" type="number" min="250000" placeholder="Valor pagado" oninput="calcularVistaPrevia()">
+          <div class="field-note">El pago mínimo permitido es de $250.000.</div>
         </div>
         <div>
           <label for="fechaPago">Fecha del pago</label>
@@ -1518,6 +1519,7 @@ tr:hover td{
         <div>
           <label for="referenciaPago">Referencia o numero de comprobante</label>
           <input id="referenciaPago" placeholder="Ej: TXN-12345">
+          <div class="field-note">Si seleccionas <strong>Efectivo</strong>, se generará automáticamente un número de referencia si no escribes uno.</div>
         </div>
         <div>
           <label for="comprobante">Adjuntar comprobante</label>
@@ -1530,9 +1532,12 @@ tr:hover td{
       </div>
 
       <div id="previewComprobante" class="preview"></div>
+      <div id="revisionManualAviso" class="ocr-status warn" style="display:none;margin-top:12px;"></div>
 
+      <div id="notaEdicion" class="edit-note" style="display:none;margin-bottom:12px;color:#8f1d2c;font-weight:700;">Estás editando un pago existente. Al guardar se actualizará el registro en lugar de crear uno nuevo.</div>
       <div class="toolbar">
-        <button class="btn-success" onclick="registrarPago()">Guardar pago</button>
+        <button id="btnGuardarPago" class="btn-success" type="button" onclick="registrarPago()">Guardar pago</button>
+        <button id="btnCancelarEdicion" class="btn-muted" type="button" onclick="cancelarEdicionPago()" style="display:none;">Cancelar edición</button>
         <button class="btn-muted" onclick="limpiarFormularioPago()">Limpiar formulario</button>
         <button class="btn-primary" onclick="window.print()">Imprimir resumen</button>
       </div>
@@ -1560,10 +1565,11 @@ tr:hover td{
               <th>Comprobante</th>
               <th>Comprobante pago</th>
               <th>Observaciones</th>
+              <th>Acción</th>
             </tr>
           </thead>
           <tbody id="tablaPagos">
-            <tr><td colspan="8" class="empty">Busca un participante para consultar su historial.</td></tr>
+            <tr><td colspan="9" class="empty">Busca un participante para consultar su historial.</td></tr>
           </tbody>
         </table>
       </div>
@@ -2364,14 +2370,17 @@ function fusionarPagosConComprobantes(pagos,comprobantes){
   return fusionados;
 }
 
-function buscarPagoSimilar({documento,codigo,fechaPago,valorAbono,referenciaPago}){
+function buscarPagoSimilar({documento,codigo,fechaPago,valorAbono,referenciaPago,idPago}){
   const refNueva=normalizarReferenciaPago(referenciaPago);
   const docNuevo=normalizarDocumento(documento);
   const codigoNuevo=normalizarTextoBusqueda(codigo);
   const fechaNueva=normalizarFechaPagoClave(fechaPago);
   const valorNuevo=Number(valorAbono || 0);
+  const idActual=String(idPago || "").trim();
 
   return todosLosPagosRegistrados().find((pago)=>{
+    const pagoId=String(pago.IdPago || pago.idPago || "").trim();
+    if(idActual && pagoId && pagoId === idActual) return false;
     if(refNueva && pagoTieneMismaReferencia(pago,refNueva)) return true;
 
     const mismoDocumento=docNuevo && normalizarDocumento(pago.Documento || pago.documento || pago.cedula || "") === docNuevo;
@@ -2806,10 +2815,71 @@ function renderHistorialPagos(){
       <td>${link}</td>
       <td><button class="receipt-link" type="button" onclick="descargarComprobanteHistorial(${index})">Descargar</button></td>
       <td>${escaparPagoHtml(pago.ObservacionPago || "")}</td>
+      <td><button class="receipt-link" type="button" onclick="editarPago(${index})">Editar</button></td>
     </tr>`;
   });
 
   tabla.innerHTML=html;
+}
+
+function editarPago(index){
+  const pago = pagosHistorialActual[index];
+  if(!pago){
+    mostrarAviso("No se encontro el pago para editar.","Pago no disponible");
+    return;
+  }
+
+  if(!participanteActual){
+    mostrarAviso("Busca primero un participante antes de editar su pago.","Selecciona participante");
+    return;
+  }
+
+  document.getElementById("organizador").value = pago.Organizador || "";
+  document.getElementById("medioPago").value = pago.MedioPago || "Transferencia";
+  document.getElementById("abono").value = pago.ValorAbono || "";
+  document.getElementById("fechaPago").value = formatoFechaInput(pago.FechaPago || pago.FechaRegistro || "");
+  document.getElementById("referenciaPago").value = pago.ReferenciaPago || "";
+  document.getElementById("observacionPago").value = pago.ObservacionPago || pago.ObservacionPag || "";
+
+  pagoEditando = pago;
+  setModoEdicionPago(true);
+  calcularVistaPrevia();
+}
+
+function cancelarEdicionPago(){
+  pagoEditando = null;
+  setModoEdicionPago(false);
+  limpiarFormularioPago();
+  if(participanteActual){
+    document.getElementById("organizador").value = participanteActual.LiderAsignado || participanteActual.liderAsignado || "";
+  }
+}
+
+function setModoEdicionPago(activo){
+  const btnGuardar = document.getElementById("btnGuardarPago");
+  const btnCancelar = document.getElementById("btnCancelarEdicion");
+  const nota = document.getElementById("notaEdicion");
+
+  if(btnGuardar) btnGuardar.innerText = activo ? "Actualizar pago" : "Guardar pago";
+  if(btnCancelar) btnCancelar.style.display = activo ? "inline-flex" : "none";
+  if(nota) nota.style.display = activo ? "block" : "none";
+}
+
+function formatoFechaInput(valor){
+  if(!valor) return "";
+  const fecha = new Date(valor);
+  if(Number.isNaN(fecha.getTime())){
+    const partes = String(valor).split(/[\/\-]/).map((p) => p.padStart(2, "0"));
+    if(partes.length === 3){
+      if(partes[0].length === 4) return `${partes[0]}-${partes[1]}-${partes[2]}`;
+      return `${partes[2]}-${partes[1]}-${partes[0]}`;
+    }
+    return "";
+  }
+  const year = fecha.getFullYear();
+  const month = String(fecha.getMonth() + 1).padStart(2, "0");
+  const day = String(fecha.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 async function descargarComprobanteHistorial(index){
@@ -3059,6 +3129,48 @@ async function leerReferenciaComprobanteImagen(dataUrl){
   };
 }
 
+function generarReferenciaPagoEfectivo(){
+  const fecha = new Date();
+  const timestamp = fecha.toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+  return `EFECTIVO-${timestamp}`;
+}
+
+function actualizarReferenciaEfectivo(){
+  const medioPago = String(document.getElementById("medioPago")?.value || "").trim().toLowerCase();
+  const campoReferencia = document.getElementById("referenciaPago");
+  if(!campoReferencia) return;
+
+  if(medioPago === "efectivo"){
+    if(!campoReferencia.value.trim()){
+      campoReferencia.value = generarReferenciaPagoEfectivo();
+    }
+  }
+}
+
+function actualizarRevisionManual(){
+  const medioPago = String(document.getElementById("medioPago")?.value || "").trim();
+  const archivo = document.getElementById("comprobante")?.files?.[0];
+  const mensajeElemento = document.getElementById("revisionManualAviso");
+  if(!mensajeElemento) return;
+
+  let mensaje = "";
+  if(medioPago === "Efectivo"){
+    mensaje = "Pago en efectivo: requiere revisión manual adicional porque no hay validación automática de la entidad emisora.";
+  } else if(archivo && (archivo.type === "application/pdf" || /\.pdf$/i.test(archivo.name))){
+    mensaje = "PDF adjunto: la verificación automática no es confiable para PDF. Revisa el comprobante manualmente.";
+  } else if(comprobanteTemporal && !comprobanteTemporal.textoOCR){
+    mensaje = "No se pudieron extraer datos del comprobante. Revisa el comprobante manualmente para validar su autenticidad.";
+  }
+
+  if(mensaje){
+    mensajeElemento.style.display = "block";
+    mensajeElemento.className = "ocr-status warn";
+    mensajeElemento.textContent = mensaje;
+  } else {
+    mensajeElemento.style.display = "none";
+  }
+}
+
 function previsualizarComprobante(){
   const input=document.getElementById("comprobante");
   const preview=document.getElementById("previewComprobante");
@@ -3092,6 +3204,7 @@ function previsualizarComprobante(){
           comprobanteTemporal.textoOCR=texto;
           if(medio){
             document.getElementById("medioPago").value=medio;
+            actualizarReferenciaEfectivo();
           }
           if(monto){
             const campoAbono=document.getElementById("abono");
@@ -3114,9 +3227,15 @@ function previsualizarComprobante(){
         })
         .catch(()=>{
           actualizarEstadoOCRComprobante("warn","Lectura no disponible","No se pudo leer automaticamente. Escribe manualmente la referencia o numero de comprobante.");
+        })
+        .finally(()=>{
+          actualizarRevisionManual();
         });
     }else if(archivo.type === "application/pdf" || /\.pdf$/i.test(archivo.name)){
       preview.innerHTML+=`<div class="ocr-status warn"><strong>PDF adjunto</strong>La lectura automatica funciona con imagenes. Para PDF escribe la referencia manualmente.</div>`;
+      actualizarRevisionManual();
+    } else {
+      actualizarRevisionManual();
     }
   };
   lector.readAsDataURL(archivo);
@@ -3133,6 +3252,8 @@ function limpiarFormularioPago(){
   document.getElementById("previewComprobante").style.display="none";
   document.getElementById("previewComprobante").innerHTML="";
   comprobanteTemporal=null;
+  pagoEditando = null;
+  setModoEdicionPago(false);
 }
 
 function cargarDatosBase(persona){
@@ -3245,6 +3366,8 @@ function buscarParticipante(){
 
   participanteActual = normalizarRegistroUJECA(persona);
   participanteActual.LiderAsignado=obtenerLiderPorIglesiaPago(participanteActual) || participanteActual.LiderAsignado || participanteActual.liderAsignado || "";
+  pagoEditando = null;
+  setModoEdicionPago(false);
 
   cargarDatosBase(participanteActual);
   document.getElementById("organizador").value=participanteActual.LiderAsignado || participanteActual.liderAsignado || "";
@@ -3270,8 +3393,13 @@ async function registrarPago(){
   const medioPago=document.getElementById("medioPago").value;
   const valorAbono=Number(document.getElementById("abono").value || 0);
   const fechaPago=document.getElementById("fechaPago").value;
-  const referenciaPago=document.getElementById("referenciaPago").value.trim();
+  let referenciaPago=document.getElementById("referenciaPago").value.trim();
   const observacionPago=document.getElementById("observacionPago").value.trim();
+
+  if(medioPago === "Efectivo" && !referenciaPago){
+    referenciaPago = generarReferenciaPagoEfectivo();
+    document.getElementById("referenciaPago").value = referenciaPago;
+  }
 
   if(!organizador){
     mostrarAviso("Ingresa el nombre del organizador responsable del registro.","Organizador requerido");
@@ -3280,6 +3408,11 @@ async function registrarPago(){
 
   if(valorAbono <= 0){
     mostrarAviso("Ingresa un valor de abono valido mayor que cero.","Valor no valido");
+    return;
+  }
+
+  if(valorAbono < 250000){
+    mostrarAviso("El pago mínimo autorizado es $250.000. Ingresa ese valor o más para registrar el pago en el sistema.","Pago mínimo requerido");
     return;
   }
 
@@ -3316,7 +3449,8 @@ async function registrarPago(){
     codigo:participanteActual.Codigo,
     fechaPago,
     valorAbono,
-    referenciaPago
+    referenciaPago,
+    idPago:pagoEditando ? pagoEditando.IdPago || pagoEditando.idPago : undefined
   });
   if(pagoDuplicado){
     const nombreDuplicado=escaparPagoHtml(pagoDuplicado.Nombre || "este u otro participante");
@@ -3350,7 +3484,8 @@ async function registrarPago(){
       codigo:participanteActual.Codigo,
       fechaPago,
       valorAbono,
-      referenciaPago
+      referenciaPago,
+      idPago:pagoEditando ? pagoEditando.IdPago || pagoEditando.idPago : undefined
     });
     if(duplicadoBase){
       ocultarLoaderPago(100);
@@ -3376,9 +3511,9 @@ async function registrarPago(){
 
   const idPagoLocal=crearCodigoComprobantePago();
   const pagoPayload = {
-    accion:"registrarPago",
+    accion:pagoEditando ? "actualizarPago" : "registrarPago",
     hoja:HOJA_PAGOS,
-    IdPago:idPagoLocal,
+    IdPago:pagoEditando ? (pagoEditando.IdPago || pagoEditando.idPago) : idPagoLocal,
     CampistaKey:obtenerCampistaKey(participanteActual),
     Documento:participanteActual.Documento,
     Codigo:participanteActual.Codigo,
@@ -3401,10 +3536,10 @@ async function registrarPago(){
     FechaPago:fechaPago,
     ReferenciaPago:referenciaPago,
     ObservacionPago:observacionPago,
-    ComprobanteNombre:comprobanteTemporal ? comprobanteTemporal.nombre : "",
-    ComprobanteTipo:comprobanteTemporal ? comprobanteTemporal.tipo : "",
-    ComprobanteData:comprobanteTemporal ? comprobanteTemporal.data : "",
-    ComprobanteURL:comprobanteTemporal ? comprobanteTemporal.data : "",
+    ComprobanteNombre:comprobanteTemporal ? comprobanteTemporal.nombre : (pagoEditando ? (pagoEditando.ComprobanteNombre || pagoEditando.ComprobanteName || "") : ""),
+    ComprobanteTipo:comprobanteTemporal ? comprobanteTemporal.tipo : (pagoEditando ? (pagoEditando.ComprobanteTipo || "") : ""),
+    ComprobanteData:comprobanteTemporal ? comprobanteTemporal.data : (pagoEditando ? (pagoEditando.ComprobanteData || pagoEditando.ComprobanteURL || "") : ""),
+    ComprobanteURL:comprobanteTemporal ? comprobanteTemporal.data : (pagoEditando ? (pagoEditando.ComprobanteData || pagoEditando.ComprobanteURL || "") : ""),
     FechaRegistro:new Date().toISOString(),
     SaldoPosterior:saldo
   };
@@ -3450,6 +3585,15 @@ async function registrarPago(){
       throw new Error("El Apps Script no confirmo el guardado del pago");
     }
   }catch(error){
+    if(pagoEditando){
+      ocultarLoaderPago(100);
+      desbloquearGuardadoPago();
+      mostrarAviso(
+        `No se pudo actualizar el pago en linea. Revisa la conexion y vuelve a intentar. Detalle: ${error.message}`,
+        "Actualizacion rechazada"
+      );
+      return;
+    }
     guardarPagoPendienteSincronizar({
       ...pagoPayload,
       Fuente:"local"
@@ -3489,13 +3633,23 @@ async function registrarPago(){
     IdPago:respuestaRemota.IdPago || respuestaRemota.idPago || respuestaRemota.codigoPago || pagoPayload.IdPago,
     Fuente:"remoto"
   };
-  pagosRemotos.unshift(normalizarPago(pagoConfirmado));
+  const pagoNormalizado = normalizarPago(pagoConfirmado);
+  if(pagoEditando){
+    const indiceExistente = pagosRemotos.findIndex((item)=>normalizarReferenciaPago(item.IdPago) === normalizarReferenciaPago(pagoNormalizado.IdPago));
+    if(indiceExistente >= 0){
+      pagosRemotos[indiceExistente] = pagoNormalizado;
+    } else {
+      pagosRemotos.unshift(pagoNormalizado);
+    }
+  } else {
+    pagosRemotos.unshift(pagoNormalizado);
+  }
   renderHistorialPagos();
   actualizarResumenPago();
   setLoaderPago(
     "descarga",
-    "Pago confirmado",
-    "El registro quedo guardado. Generando comprobante para descarga.",
+    pagoEditando ? "Pago actualizado" : "Pago confirmado",
+    pagoEditando ? "El registro fue actualizado. Generando comprobante para descarga." : "El registro quedo guardado. Generando comprobante para descarga.",
     88
   );
   try{
@@ -3506,12 +3660,17 @@ async function registrarPago(){
   setLoaderPago(
     "descarga",
     "Comprobante descargado",
-    "Pago registrado y comprobante descargado correctamente.",
+    pagoEditando ? "Pago actualizado y comprobante descargado correctamente." : "Pago registrado y comprobante descargado correctamente.",
     100,
     true
   );
   ocultarLoaderPago(1500);
-  limpiarPantallaDespuesPago(`Pago registrado en Excel en linea y asociado al campista. Saldo restante: <strong>${money(saldo)}</strong>`);
+  limpiarPantallaDespuesPago(pagoEditando
+    ? `Pago actualizado en Excel en linea y asociado al campista. Saldo restante: <strong>${money(saldo)}</strong>`
+    : `Pago registrado en Excel en linea y asociado al campista. Saldo restante: <strong>${money(saldo)}</strong>`
+  );
+  pagoEditando = null;
+  setModoEdicionPago(false);
   desbloquearGuardadoPago();
 }
 
