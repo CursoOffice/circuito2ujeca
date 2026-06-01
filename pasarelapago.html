@@ -1687,6 +1687,7 @@ const IGLESIAS_POR_LIDER=[
 let participanteActual=null;
 let comprobanteTemporal=null;
 let pagosRemotos=[];
+let comprobantesRemotos=[];
 let pagosHistorialActual=[];
 let promesaOCRPagos=null;
 let participantesPorDocumento=new Map();
@@ -2306,9 +2307,61 @@ function buscarPagoPorReferencia(referencia){
 function normalizarFechaPagoClave(valor){
   const texto=String(valor || "").trim();
   if(!texto) return "";
+  const iso=texto.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if(iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
   const fecha=new Date(texto);
   if(!Number.isNaN(fecha.getTime())) return fecha.toISOString().slice(0,10);
   return texto.slice(0,10);
+}
+
+function fechaInputPago(valor){
+  return normalizarFechaPagoClave(valor);
+}
+
+function clavePagoComprobante(item){
+  const ref=normalizarReferenciaPago(item?.ReferenciaPago || item?.referenciaPago || "");
+  if(ref) return `ref::${ref}`;
+  const id=normalizarReferenciaPago(item?.IdPago || item?.idPago || item?.IdComprobante || item?.idComprobante || "");
+  if(id) return `id::${id}`;
+  const doc=normalizarDocumento(item?.Documento || item?.documento || item?.cedula || "");
+  const valor=numeroPago(item?.ValorAbono || item?.abono || item?.valor || 0);
+  const fecha=fechaInputPago(item?.FechaPago || item?.fechaPago || "");
+  return [doc,valor,fecha].filter(Boolean).join("::");
+}
+
+function fusionarPagosConComprobantes(pagos,comprobantes){
+  const mapaComprobantes=new Map();
+  (comprobantes || []).map(item=>normalizarPago({...item,Fuente:"comprobante"})).filter(Boolean).forEach((comp)=>{
+    const claves=[
+      clavePagoComprobante(comp),
+      comp.IdPago ? `id::${normalizarReferenciaPago(comp.IdPago)}` : "",
+      comp.ReferenciaPago ? `ref::${normalizarReferenciaPago(comp.ReferenciaPago)}` : ""
+    ].filter(Boolean);
+    claves.forEach((clave)=>mapaComprobantes.set(clave,comp));
+  });
+
+  const fusionados=(pagos || []).map((pagoRaw)=>{
+    const pago=normalizarPago(pagoRaw);
+    if(!pago) return null;
+    const comp=mapaComprobantes.get(clavePagoComprobante(pago))
+      || (pago.IdPago ? mapaComprobantes.get(`id::${normalizarReferenciaPago(pago.IdPago)}`) : null)
+      || (pago.ReferenciaPago ? mapaComprobantes.get(`ref::${normalizarReferenciaPago(pago.ReferenciaPago)}`) : null);
+    if(!comp) return pago;
+    return {
+      ...pago,
+      FechaPago:fechaInputPago(comp.FechaPago || pago.FechaPago),
+      ReferenciaPago:pago.ReferenciaPago || comp.ReferenciaPago,
+      ValorAbono:pago.ValorAbono || comp.ValorAbono,
+      SaldoPosterior:pago.SaldoPosterior || comp.SaldoPosterior
+    };
+  }).filter(Boolean);
+
+  (comprobantes || []).map(item=>normalizarPago({...item,Fuente:"comprobante"})).filter(Boolean).forEach((comp)=>{
+    const existe=fusionados.some((pago)=>clavePagoComprobante(pago) === clavePagoComprobante(comp));
+    if(!existe) fusionados.push({...comp,FechaPago:fechaInputPago(comp.FechaPago)});
+  });
+
+  return fusionados;
 }
 
 function buscarPagoSimilar({documento,codigo,fechaPago,valorAbono,referenciaPago}){
@@ -2343,17 +2396,19 @@ function fechaAvisoPago(valor){
 }
 
 async function refrescarPagosOficialesParaDuplicados(){
-  const respuesta=await fetch(crearUrlUJECA(API,{
-    accion:"pagos",
-    hoja:HOJA_PAGOS,
-    verificacion:"duplicados"
-  }),{cache:"no-store"});
-  if(!respuesta.ok) throw new Error("No se pudo verificar la base oficial de pagos");
-  const json=await respuesta.json();
-  const lista=Array.isArray(json) ? json : extraerListaUJECA(json);
-  if(Array.isArray(lista)){
-    pagosRemotos=lista.map(item=>normalizarPago({...item,Fuente:"remoto"})).filter(Boolean);
-  }
+  const [respuestaPagos,respuestaComprobantes]=await Promise.all([
+    fetch(crearUrlUJECA(API,{accion:"pagos",hoja:HOJA_PAGOS,verificacion:"duplicados"}),{cache:"no-store"}),
+    fetch(crearUrlUJECA(API,{accion:"comprobantes",hoja:HOJA_COMPROBANTES,verificacion:"duplicados"}),{cache:"no-store"})
+  ]);
+  if(!respuestaPagos.ok || !respuestaComprobantes.ok) throw new Error("No se pudo verificar la base oficial de pagos");
+  const [jsonPagos,jsonComprobantes]=await Promise.all([respuestaPagos.json(),respuestaComprobantes.json()]);
+  const listaPagos=Array.isArray(jsonPagos) ? jsonPagos : extraerListaUJECA(jsonPagos);
+  const listaComprobantes=Array.isArray(jsonComprobantes) ? jsonComprobantes : extraerListaUJECA(jsonComprobantes);
+  comprobantesRemotos=Array.isArray(listaComprobantes) ? listaComprobantes : [];
+  pagosRemotos=fusionarPagosConComprobantes(
+    Array.isArray(listaPagos) ? listaPagos.map(item=>({...item,Fuente:"remoto"})) : [],
+    comprobantesRemotos
+  );
   return pagosRemotos;
 }
 
@@ -2493,7 +2548,7 @@ function normalizarPago(pago){
     DescuentoAplicado:numeroPago(pago.DescuentoAplicado || pago.descuentoAplicado || 0),
     ValorTotal:numeroPago(pago.ValorTotal || pago.valorTotal || 0),
     ValorAbono:numeroPago(pago.ValorAbono || pago.abono || pago.valor || 0),
-    FechaPago:pago.FechaPago || pago.fechaPago || "",
+    FechaPago:fechaInputPago(pago.FechaPago || pago.fechaPago || ""),
     ReferenciaPago:pago.ReferenciaPago || pago.referenciaPago || "",
     ObservacionPago:pago.ObservacionPago || pago.ObservacionPag || pago.observacionPago || "",
     ComprobanteNombre:pago.ComprobanteNombre || pago.comprobanteNombre || "",
@@ -3117,23 +3172,21 @@ async function cargar(){
   document.getElementById("mensajePago").innerHTML="Sincronizando base oficial de inscritos y pagos...";
 
   try{
-    const [registros, jsonPagos] = await Promise.all([
+    const [registros, jsonPagos, jsonComprobantes] = await Promise.all([
       cargarRegistrosRemotosUJECA(window.UJECA_API.listado),
-      fetch(API_PAGOS,{cache:"no-store"}).then(r=>r.ok ? r.json() : [])
+      fetch(API_PAGOS,{cache:"no-store"}).then(r=>r.ok ? r.json() : []),
+      fetch(API_COMPROBANTES,{cache:"no-store"}).then(r=>r.ok ? r.json() : [])
     ]);
 
     BD = Array.isArray(registros)
       ? registros.map(normalizarRegistroUJECA).filter(Boolean)
       : [];
     indexarParticipantes();
-    pagosRemotos = Array.isArray(jsonPagos)
-      ? jsonPagos.map(item=>normalizarPago({...item,Fuente:"remoto"})).filter(Boolean)
-      : [];
-    try{
-      await fetch(API_COMPROBANTES,{cache:"no-store"});
-    }catch{
-      // La hoja de comprobantes se sincroniza cuando el Apps Script actualizado este publicado.
-    }
+    comprobantesRemotos = Array.isArray(jsonComprobantes) ? jsonComprobantes : extraerListaUJECA(jsonComprobantes);
+    pagosRemotos = fusionarPagosConComprobantes(
+      Array.isArray(jsonPagos) ? jsonPagos.map(item=>({...item,Fuente:"remoto"})) : extraerListaUJECA(jsonPagos).map(item=>({...item,Fuente:"remoto"})),
+      comprobantesRemotos
+    );
     cargada=true;
     document.getElementById("mensajePago").innerHTML="";
     renderHistorialPagos();
@@ -3141,6 +3194,7 @@ async function cargar(){
     BD = [];
     indexarParticipantes();
     pagosRemotos = [];
+    comprobantesRemotos = [];
     cargada=false;
     participanteActual=null;
     renderHistorialPagos();
